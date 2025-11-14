@@ -1,12 +1,46 @@
 import argparse
-import ast
+import ctypes
 import getpass
-import importlib.util
-import shutil
+import subprocess
+import sys
 import traceback
-import types
 
 from invoker import *
+
+if os.name == 'nt':
+    kernel32 = ctypes.windll.kernel32
+    kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+
+
+def clear_cli():
+    if os.name == 'nt':
+        sys.stdout.write('\x1b[?1049h')
+        sys.stdout.flush()
+    else:
+        subprocess.run('tput smcup', shell=True)
+
+
+def wipe_out():
+    if os.name == 'nt':
+        sys.stdout.write('\x1b[?1049l')
+        sys.stdout.flush()
+    else:
+        subprocess.run('tput rmcup', shell=True)
+
+
+class PasswordConfirmation(Exception):
+    pass
+
+
+def get_password(confirmation=False) -> str:
+    password = getpass.getpass('Enter passphrase: ', stream=None)
+    if confirmation:
+        password_confirm = getpass.getpass('Please enter passphrase to confirm: ',
+                                           stream=None)
+        if password != password_confirm:
+            raise PasswordConfirmation(f"Passphrase confirmation failed")
+
+    return password
 
 
 def create_parser():
@@ -49,64 +83,27 @@ def main(args, parser):
     if hasattr(args, 'which'):
         match args.which:
             case 'add':
-                if os.path.exists(args.path):
+                try:
+                    out_put_slot_path = ''
                     if args.load:
-                        try:
-                            password = getpass.getpass('Enter passphrase to decrypt the module: ', stream=None)
-                            context = decrypt_file(str(args.path), password)
-                            ast.parse(context)
-                            module_name = "module"
-                            module = types.ModuleType(module_name)
-                            namespace = module.__dict__
-                            exec(context, namespace)
-                            if hasattr(module, 'invoke'):
-                                out_put_slot_path = f'{INVOKER_SLOTS_DIR}/{os.path.basename(args.path)}'
-                                shutil.copy(args.path, out_put_slot_path)
-                                print(f"{sha256sum(out_put_slot_path)} added to slot-ring")
-
-                            else:
-                                print(f"Operation aborted: module does not have `invoke` method", file=sys.stderr)
-                        except Exception:
-                            print(f"Operation aborted: invalid context", file=sys.stderr)
+                        password = getpass.getpass('Enter passphrase to decrypt the module: ', stream=None)
+                        out_put_slot_path = f'{INVOKER_SLOTS_DIR}/{os.path.basename(args.path)}'
+                        if validate_encrypted_module(args.path, password):
+                            shutil.copy(args.path, out_put_slot_path)
                     else:
+                        if validate_module(args.path):
+                            password = get_password(True) if args.encrypt else None
+                            if args.encrypt:
+                                name, extension = os.path.splitext(os.path.basename(args.path))
+                                out_put_slot_path = f'{INVOKER_SLOTS_DIR}/{name}.enc{extension}'
 
-                        spec = importlib.util.spec_from_file_location('key', args.path)
-                        module = importlib.util.module_from_spec(spec)
-                        if spec.loader:
-                            try:
-                                spec.loader.exec_module(module)
-                            except SyntaxError:
-                                print(f"Operation aborted: invalid input", file=sys.stderr)
-                                exit(1)
-                            if hasattr(module, 'invoke'):
-                                if args.encrypt:
-                                    name, extension = os.path.splitext(os.path.basename(args.path))
+                            add_slot(args.path, password)
+                    if out_put_slot_path != '':
+                        print(f"{sha256sum(out_put_slot_path)} added to slot-ring")
 
-                                    password = getpass.getpass('Enter passphrase to encrypt the module: ', stream=None)
-                                    password_confirm = getpass.getpass('Please enter passphrase to confirm: ',
-                                                                       stream=None)
-                                    if password != password_confirm:
-                                        print(f"Operation aborted: passphrase confirmation failed", file=sys.stderr)
-                                        exit(1)
-                                    buffer = encrypt_file(args.path, password)
-                                    out_put_slot_path = f'{INVOKER_SLOTS_DIR}/{name}.enc{extension}'
-                                else:
-                                    out_put_slot_path = f'{INVOKER_SLOTS_DIR}/{os.path.basename(args.path)}'
-
-                                    with open(args.path, 'rb') as f_in:
-                                        buffer = f_in.read()
-                                if find_slot(hashlib.sha256(buffer).hexdigest()) is None:
-                                    with open(out_put_slot_path, 'wb') as f_out:
-                                        f_out.write(buffer)
-                                    print(f"{sha256sum(out_put_slot_path)} added to slot-ring")
-                                else:
-                                    print(f"Operation aborted: slot already exists", file=sys.stderr)
-                            else:
-                                print(f"Operation aborted: module does not have `invoke` method", file=sys.stderr)
-                        else:
-                            print(f"Operation aborted: No loader found for {args.path}", file=sys.stderr)
-                else:
-                    print(f"Operation aborted: file '{args.path}' does not exists", file=sys.stderr)
+                except (InvalidModule, FileNotFoundError, InvalidSlotID, DuplicateSlotID, PasswordConfirmation) as e:
+                    print(f"Operation aborted: {str(e)}", file=sys.stderr)
+                    exit(1)
 
             case 'list':
                 print("Key Hash    Key Name")
@@ -128,9 +125,12 @@ def main(args, parser):
                 clear_cli()
                 try:
                     try:
-                        slot_path = find_slot(args.id)
+                        candidate_slots = find_slots(args.id)
+                        mssrio(candidate_slots)
+                        slot_path = candidate_slots[0].path
+
                         password = None
-                        if str(slot_path).endswith('.enc'):
+                        if str(slot_path).endswith('.enc.py'):
                             password = getpass.getpass('Enter passphrase to decrypt the module:', stream=None)
 
                         invoke_slot(slot_path, password)
@@ -154,15 +154,17 @@ def main(args, parser):
                 wipe_out()
             case 'save':
                 try:
-                    slot_path = find_slot(args.id)
+                    candidate_slots = find_slots(args.id)
+                    mssrio(candidate_slots)
+                    slot_path = candidate_slots[0].path
                     password = None
-                    if args.decrypt and str(slot_path).endswith('.enc'):
+                    if args.decrypt and str(slot_path).endswith('.enc.py'):
                         password = getpass.getpass('Enter passphrase to decrypt the module:', stream=None)
 
                     save_slot(slot_path, args.path, password)
                     print(f"Slot `{args.id}` saved to `{args.path}`")
 
-                except (InvalidSlotID ,DuplicateSlotID, IncorrectPasswordOrCorruptedFile) as e:
+                except (InvalidSlotID, DuplicateSlotID, IncorrectPasswordOrCorruptedFile) as e:
                     print(str(e), file=sys.stderr)
                     exit(1)
             case _:

@@ -8,7 +8,8 @@ from unittest import TestCase
 from unittest.mock import patch, mock_open
 
 import src.invoker as invoker_module
-from src.invoker import create_parser, main
+import src.cli as cli_module
+from src.cli import create_parser, main
 
 SCRIPTS_PATH = 'tests/_helper/scripts'
 LOCK_FILE_PATH = "/tmp/invoker.lock"
@@ -116,19 +117,19 @@ class TestAddModuleOfInvokerCLI(BaseInvokerCLITestCase):
 
 
     def test_add_empty_file(self):
-        f, e = execute_and_get_output(['add', f'{SCRIPTS_PATH}/empty_file.py'])
+        f, e = execute_and_get_output(['add', f'{SCRIPTS_PATH}/empty_file.py'], False)
         output = e.getvalue().strip()
-        self.assertEqual("Operation aborted: module does not have `invoke` method", output)
+        self.assertEqual("Operation aborted: Module does not have `invoke` method", output)
 
     def test_add_incorrect_file(self):
         f, e = execute_and_get_output(['add', f'{SCRIPTS_PATH}/incorrect.py'], False)
         output = e.getvalue().strip()
-        self.assertEqual("Operation aborted: invalid input", output)
+        self.assertEqual("Operation aborted: invalid syntax (incorrect.py, line 1)", output)
 
     def test_add_py_file_without_invoke_method(self):
-        f, e = execute_and_get_output(['add', f'{SCRIPTS_PATH}/without_invoke.py'])
+        f, e = execute_and_get_output(['add', f'{SCRIPTS_PATH}/without_invoke.py'], False)
         output = e.getvalue().strip()
-        self.assertEqual("Operation aborted: module does not have `invoke` method", output)
+        self.assertEqual("Operation aborted: Module does not have `invoke` method", output)
 
     def test_add_so_file_without_invoke_method(self):
         pass
@@ -145,18 +146,18 @@ class TestAddModuleOfInvokerCLI(BaseInvokerCLITestCase):
         f, e = execute_and_get_output(['add', f'{SCRIPTS_PATH}/bare_invoke.py'], False)
         f, e = execute_and_get_output(['add', f'{SCRIPTS_PATH}/bare_invoke.py'], False)
         output = e.getvalue().strip()
-        self.assertEqual(f"Operation aborted: slot already exists", output)
+        self.assertEqual(f"Operation aborted: Slot already exists", output)
 
     def test_invalid_path(self):
         f, e = execute_and_get_output(['add', f'{SCRIPTS_PATH}/invalid_path.py'], False)
         output = e.getvalue().strip()
-        self.assertEqual(f"Operation aborted: file '{SCRIPTS_PATH}/invalid_path.py' does not exists", output)
+        self.assertEqual(f"Operation aborted: File '{SCRIPTS_PATH}/invalid_path.py' does not exists", output)
 
     @patch('getpass.getpass', side_effect=['SomePassPhrase', 'DifferentPassPhrase'])
     def test_password_confirmation(self, mock_getpass):
         f, e = execute_and_get_output(['add', f'{SCRIPTS_PATH}/bare_invoke.py', '--encrypt'], False)
         output = e.getvalue().strip()
-        self.assertEqual("Operation aborted: passphrase confirmation failed", output)
+        self.assertEqual("Operation aborted: Passphrase confirmation failed", output)
 
     def test_add_duplilcate_file_names(self):
         pass
@@ -213,12 +214,12 @@ class TestDeleteModuleOfInvokerCLI(BaseInvokerCLITestCase):
 
         f, e = execute_and_get_output(['delete', slot_sha256])
         output = e.getvalue().strip()
-        self.assertEqual(f"Error: Multiple identifiers found with provided prefix: {slot_sha256}", output)
+        self.assertEqual(f"Multiple identifiers found with provided prefix.", output)
 
     def test_delete_none_existing_slot(self):
         f, e = execute_and_get_output(['delete', 'not_existing_slot'])
         output = e.getvalue().strip()
-        self.assertEqual(f"Unable to find the slot: not_existing_slot", output)
+        self.assertEqual(f"Unable to find the slot with provided prefix.", output)
 
 
 class TestSaveModuleOfInvokerCLI(BaseInvokerCLITestCase):
@@ -249,12 +250,12 @@ class TestSaveModuleOfInvokerCLI(BaseInvokerCLITestCase):
         f, e = execute_and_get_output(['save', slot_sha256, tmp_saved_slot_path], False)
 
         output = e.getvalue().strip()
-        self.assertEqual(f"Error: Multiple identifiers found with provided prefix: {slot_sha256}", output)
+        self.assertEqual(f"Multiple identifiers found with provided prefix.", output)
 
     def test_save_none_existing_slot(self):
-        f, e = execute_and_get_output(['save', 'not_existing_slot', 'some_tmp_path'])
+        f, e = execute_and_get_output(['save', 'not_existing_slot', 'some_tmp_path'], False)
         output = e.getvalue().strip()
-        self.assertEqual(f"Unable to find the slot: not_existing_slot", output)
+        self.assertEqual(f"Unable to find the slot with provided prefix.", output)
 
     @patch('getpass.getpass', side_effect=['VerySecurePassPhrase', 'VerySecurePassPhrase', 'VerySecurePassPhrase'])
     def test_save_encrypted_slot(self, mock_getpass):
@@ -330,14 +331,14 @@ class TestInvokerModuleOfInvokerCLI(BaseInvokerCLITestCase):
     def test_invoker_none_existing_slot(self, mock_getpass):
         f, e = execute_and_get_output(['invoke', 'not_existing_slot'], False)
         output = e.getvalue().strip()
-        self.assertEqual(f"Unable to find the slot: not_existing_slot", output)
+        self.assertEqual(f"Unable to find the slot with provided prefix.", output)
 
 class TestSlotDiscovery(BaseInvokerCLITestCase):
     def test_search_by_name(self):
         Path(f"{invoker_module.INVOKER_SLOTS_DIR}/slot1.py").touch()
         Path(f"{invoker_module.INVOKER_SLOTS_DIR}/slot2.py").touch()
         Path(f"{invoker_module.INVOKER_SLOTS_DIR}/slot3.py").touch()
-        self.assertIsNotNone(invoker_module.find_slot('slot1'))
+        self.assertIsNotNone(invoker_module.find_slots('slot1'))
         shutil.rmtree(invoker_module.INVOKER_HOME_DIR)
         os.mkdir(invoker_module.INVOKER_HOME_DIR)
 
@@ -345,7 +346,7 @@ class TestSlotDiscovery(BaseInvokerCLITestCase):
         Path(f"{invoker_module.INVOKER_SLOTS_DIR}/slot1.py").touch()
         Path(f"{invoker_module.INVOKER_SLOTS_DIR}/slot2.py").touch()
         Path(f"{invoker_module.INVOKER_SLOTS_DIR}/slot3.py").touch()
-        self.assertIsNone(invoker_module.find_slot('unsearchable_slot'))
+        self.assertEqual([],invoker_module.find_slots('unsearchable_slot'))
         shutil.rmtree(invoker_module.INVOKER_HOME_DIR)
         os.mkdir(invoker_module.INVOKER_HOME_DIR)
 
@@ -353,7 +354,7 @@ class TestSlotDiscovery(BaseInvokerCLITestCase):
         Path(f"{invoker_module.INVOKER_SLOTS_DIR}/slot1.enc").touch()
         Path(f"{invoker_module.INVOKER_SLOTS_DIR}/slot2.enc").touch()
         Path(f"{invoker_module.INVOKER_SLOTS_DIR}/slot3.enc").touch()
-        self.assertIsNotNone(invoker_module.find_slot('slot2'))
+        self.assertIsNotNone(invoker_module.find_slots('slot2'))
         shutil.rmtree(invoker_module.INVOKER_HOME_DIR)
         os.mkdir(invoker_module.INVOKER_HOME_DIR)
 
@@ -364,7 +365,7 @@ class TestSlotDiscovery(BaseInvokerCLITestCase):
         Path(f"{invoker_module.INVOKER_SLOTS_DIR}/slot3.py").touch()
 
         sum_id = invoker_module.sha256sum(f"{invoker_module.INVOKER_SLOTS_DIR}/slot1.py")
-        self.assertIsNotNone(invoker_module.find_slot(sum_id))
+        self.assertIsNotNone(invoker_module.find_slots(sum_id))
         shutil.rmtree(invoker_module.INVOKER_HOME_DIR)
         os.mkdir(invoker_module.INVOKER_HOME_DIR)
 
@@ -415,26 +416,26 @@ class TestCleanUpAndWipeOut(TestCase):
     @patch("sys.stdout.write")
     @patch("sys.stdout.flush")
     def test_clean_up_cli_on_windows(self, mock_flush, mock_write):
-        invoker_module.clear_cli()
+        cli_module.clear_cli()
         mock_write.assert_called_with('\x1b[?1049h')
         mock_flush.assert_called_once()
 
     @unittest.skipIf(os.name == 'nt', "Skip on Windows")
     @patch("subprocess.run")
     def test_clean_up_cli_on_nix_based_platform(self, mock_run):
-        invoker_module.clear_cli()
+        cli_module.clear_cli()
         mock_run.assert_called_once_with('tput smcup', shell=True)
 
     @unittest.skipIf(os.name != 'nt', "Skip on non-Windows platforms")
     @patch("sys.stdout.write")
     @patch("sys.stdout.flush")
     def test_wipe_out_on_windows(self, mock_flush, mock_write):
-        invoker_module.wipe_out()
+        cli_module.wipe_out()
         mock_write.assert_called_with('\x1b[?1049l')
         mock_flush.assert_called_once()
 
     @unittest.skipIf(os.name == 'nt', "Skip on Windows")
     @patch("subprocess.run")
     def test_wipe_out_on_nix_based_platform(self, mock_run):
-        invoker_module.wipe_out()
+        cli_module.wipe_out()
         mock_run.assert_called_once_with('tput rmcup', shell=True)
